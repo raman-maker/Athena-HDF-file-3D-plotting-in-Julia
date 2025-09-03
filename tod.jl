@@ -23,12 +23,12 @@ function plothdf(h5file::String)
     for b in 1:num_blocks
         print("\rBlock: $b")
 
-        @views Bp_block = Bp[18, :, :, b]
+        @views Bp_block = Bp[:, 3, :, b]
         r = @views x_all[:, b]
         θ = @views y_all[:, b]
         ϕ = @views z_all[:, b]
 
-        g = RectilinearGrid{𝔼, typeof(Polar(0, 0))}(θ,ϕ)
+        g = RectilinearGrid{𝔼, typeof(Polar(0, 0))}(r, ϕ)
         topo = topology(g)
         clr = Vector{Float64}(undef, nvertices(g))
         
