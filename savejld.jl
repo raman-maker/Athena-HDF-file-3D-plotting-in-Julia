@@ -16,20 +16,28 @@ function process_blocks_to_jld2(h5file; outdir="cache_blocks", samples_per_axis:
     Bp = @. hypot(Br, Bθ) / Bϕ
     x_all, y_all, z_all = read(h5["x1f"]), read(h5["x2f"]), read(h5["x3f"])
     #close(h5)
-		
+
     @threads for b in blocks
+
         outfile = joinpath(outdir, "block_$(lpad(b,4,'0')).jld2")
         if isfile(outfile)
             @info "Skipping existing $outfile"
             continue
         end
-
+        
         Bp_block = @views Bp[:, :, :, b]
         r, θ, ϕ = x_all[:, b], y_all[:, b], z_all[:, b]
         g = RectilinearGrid{𝔼, typeof(Spherical(0,0,0))}((r, θ, ϕ))
+        
+		# Compute total number of samples
+		level::Int32 = read(h5["Levels"])[b]
+		maxlvl = maximum(level)+1
+		ns = (maxlvl - level) * samples_per_axis
+		N_total = nelements(g)*ns^3
+		Xlist, Ylist, Zlist, Clist = ntuple(_ -> Vector{Float32}(undef, N_total), 4)
 
-        Xlist = Float32[]; Ylist = Float32[]; Zlist = Float32[]; Clist = Float32[]
 
+		idx::Int32 = 1
         for i in 1:nelements(g)
             el = element(g, i)
             clr = Vector{Float32}(undef, 8)
@@ -49,21 +57,27 @@ function process_blocks_to_jld2(h5file; outdir="cache_blocks", samples_per_axis:
             θgrid = LinRange(extrema(getindex.(verts, 2))..., 2)
             ϕgrid = LinRange(extrema(getindex.(verts, 3))..., 2)
             data = reshape(clr, 2, 2, 2)
+            
             itp = interpolate((rgrid, θgrid, ϕgrid), data, Gridded(Linear()))
-			level::Int32 = read(h5["Levels"])[b]
-            for rr in LinRange(rgrid[1], rgrid[end], (3-level)*(samples_per_axis)),
-                th in LinRange(θgrid[1], θgrid[end], (3-level)*(samples_per_axis)),
-                ph in LinRange(ϕgrid[1], ϕgrid[end], (3-level)*(samples_per_axis))
+            for rr in LinRange(rgrid[1], rgrid[end], ns),
+                th in LinRange(θgrid[1], θgrid[end], ns),
+                ph in LinRange(ϕgrid[1], ϕgrid[end], ns)
                 val = itp(rr, th, ph)
-                push!(Xlist, rr * sin(th) * cos(ph))
-                push!(Ylist, rr * sin(th) * sin(ph))
-                push!(Zlist, rr * cos(th))
-                push!(Clist, val)
+               	@inbounds begin
+				    Xlist[idx] = rr * sin(th) * cos(ph)
+				    Ylist[idx] = rr * sin(th) * sin(ph)
+				    Zlist[idx] = rr * cos(th)
+				    Clist[idx] = val
+				    idx += 1
+				end
             end
         end
 
-        # Save to JLD2
-        @save outfile Xlist Ylist Zlist Clist
+        x_min, x_max = extrema(Xlist)
+		y_min, y_max = extrema(Ylist)
+		z_min, z_max = extrema(Zlist)
+		@save outfile Xlist Ylist Zlist Clist x_min x_max y_min y_max z_min z_max
+
         #println("💾 Saved block $b → $outfile")# ($(length(Xlist)) pts)")
     end
 end
@@ -74,24 +88,24 @@ end
 # ────────────────────────────────────────────────────────────────
 
 function stream_jld2_blocks(outdir; grid_res=150, outfile="final_volume.jld2")
-    files = sort(filter(f -> endswith(f, "72.jld2"), readdir(outdir; join=true)))
-    isempty(files) && error("No .jld2 block files in $outdir")
+    files = sort(filter(f -> endswith(f, ".jld2"), readdir(outdir; join=true)))
+    #isempty(files) && error("No .jld2 block files in $outdir")
     println("📦 Found $(length(files)) cached blocks")
 
     # Pass 1: Compute global bounds (streamed)
     println("🔍 Computing bounds ...")
-    xmins = Float32[]; xmaxs = Float32[]
-    ymins = Float32[]; ymaxs = Float32[]
-    zmins = Float32[]; zmaxs = Float32[]
+	Nf = length(files)
+	xmins, xmaxs, ymins, ymaxs, zmins, zmaxs = ntuple(_ -> Vector{Float32}(undef, Nf), 6)
 
-    for f in files
-        jldopen(f, "r"; mmaparrays=true) do jld
-            X = jld["Xlist"]; Y = jld["Ylist"]; Z = jld["Zlist"]
-            push!(xmins, minimum(X)); push!(xmaxs, maximum(X))
-            push!(ymins, minimum(Y)); push!(ymaxs, maximum(Y))
-            push!(zmins, minimum(Z)); push!(zmaxs, maximum(Z))
-        end
-    end
+	@inbounds for i in 1:Nf
+		f = files[i]
+		jldopen(f, "r") do jld
+			xmins[i] = jld["x_min"]; xmaxs[i] = jld["x_max"]
+			ymins[i] = jld["y_min"]; ymaxs[i] = jld["y_max"]
+			zmins[i] = jld["z_min"]; zmaxs[i] = jld["z_max"]
+		end
+	end
+
     x_min, x_max = minimum(xmins), maximum(xmaxs)
     y_min, y_max = minimum(ymins), maximum(ymaxs)
     z_min, z_max = minimum(zmins), maximum(zmaxs)
@@ -106,29 +120,20 @@ function stream_jld2_blocks(outdir; grid_res=150, outfile="final_volume.jld2")
     # Pass 3: Stream files lazily
     for (i, f) in enumerate(files)
         println("📖 $(i)/$(length(files)): $(basename(f))")
-        jldopen(f, "r"; mmaparrays=true) do jld
+        jldopen(f, "r"; mmaparrays=false) do jld
             X, Y, Z, C = jld["Xlist"], jld["Ylist"], jld["Zlist"], jld["Clist"]
             sx = (nx - 1) / (x_max - x_min)
 			sy = (ny - 1) / (y_max - y_min)
 			sz = (nz - 1) / (z_max - z_min)
-
 			@inbounds @fastmath for j in eachindex(X)
-				xi = Int(round((X[j] - x_min) * sx)) + 1
-				yi = Int(round((Y[j] - y_min) * sy)) + 1
-				zi = Int(round((Z[j] - z_min) * sz)) + 1
+				xi = Int32(round((X[j] - x_min) * sx)) + 1
+				yi = Int32(round((Y[j] - y_min) * sy)) + 1
+				zi = Int32(round((Z[j] - z_min) * sz)) + 1
 				ix = max(1, min(nx, xi))
 				iy = max(1, min(ny, yi))
 				iz = max(1, min(nz, zi))
 				field[ix, iy, iz] = C[j]
 			end
-
-            #=@inbounds for j in eachindex(X)
-                xi, yi, zi, ci = X[j], Y[j], Z[j], C[j]
-                ix = (Int(round((xi - x_min)/(x_max - x_min) * (nx - 1))) + 1, 1, nx)   #clamp
-                iy = (Int(round((yi - y_min)/(y_max - y_min) * (ny - 1))) + 1, 1, ny)
-                iz = (Int(round((zi - z_min)/(z_max - z_min) * (nz - 1))) + 1, 1, nz)
-                field[ix, iy, iz] = ci
-            end=#
         end
     end
     println("✅ Streaming complete.")
@@ -157,7 +162,8 @@ function plot_saved_volume(outfile::String)
     finite_vals = filter(!isnan, vec(field))
     q_low, q_high = quantile(finite_vals, (0.05, 0.95))
     fig = Figure(size=(900, 900))
-    ax = Axis3(fig[1,1], title="Saved Volume", aspect=:data)
+    #ax = Axis3(fig[1,1], title="Saved Volume", aspect=:data)
+    ax = LScene(fig[1,1], show_axis=false)
     volume!(ax, x_min..x_max, y_min..y_max, z_min..z_max, field; colorrange=(q_low, q_high))
     display(fig)
     return fig
@@ -169,11 +175,10 @@ end
 # ────────────────────────────────────────────────────────────────
 
 # Step 1: Convert .athdf → .jld2 blocks
-@time process_blocks_to_jld2("sane00.prim.01800.athdf"; samples_per_axis=20, blocks=1:872)
+@time process_blocks_to_jld2("sane98.prim.01900.athdf"; outdir="981900", samples_per_axis=20, blocks=2000)
 
 # Step 2: Stream into 3D field (lazy JLD2 reads)
-fig = stream_jld2_blocks("cache_blocks"; grid_res=150)
-#Profile.print(format=:flat)
+@profile fig = stream_jld2_blocks("981900"; grid_res=50)
+Profile.print(format=:flat)
 # Step 3: Reload instantly
 plot_saved_volume("final_volume.jld2")
-
