@@ -1,28 +1,33 @@
+#### These are the library that we need to install before importing/using them.
 using HDF5, Interpolations, GLMakie, Base.Threads, Statistics
 
 @time begin
+
+#### readhdf() function reads the .athdf file.
 function readhdf(h5file::String)
 	h5 = h5open(h5file, "r")
-	@views x1v::Matrix{Float32}, x2v::Matrix{Float32}, x3v::Matrix{Float32}= Array(h5["x1f"]), Array(h5["x2f"]), Array(h5["x3f"])
+	@views x1f::Matrix{Float32}, x2f::Matrix{Float32}, x3f::Matrix{Float32}= Array(h5["x1f"]), Array(h5["x2f"]), Array(h5["x3f"])
 	prim = h5["prim"]
 	@views ρ::Array{Float32, 4} = prim[:,:,:,:,1]
 	B  = h5["B"]      # (Nx, Ny, Nz, blocks, 3)
 	@views Br::Array{Float32, 4}, Bθ::Array{Float32, 4}, Bϕ::Array{Float32, 4} = B[:,:,:,:,1], B[:,:,:,:,2], B[:,:,:,:,3]
-	Bp = @. hypot(Br, Bθ) / Bϕ
-	blocks::Int32 = 400#read(HDF5.attributes(h5),"NumMeshBlocks") 
+	Bp = @. Bθ+Bϕ	#@. hypot(Br, Bθ) / Bϕ
+	blocks::Int32 = read(HDF5.attributes(h5),"NumMeshBlocks") 
 	Nblocks = 1:blocks
+	@show extrema(x3f)
 	Time::Float32 = read((HDF5.attributes(h5))["Time"])
-	return Bp, ρ, x1v, x2v, x3v, blocks, Nblocks, Time
+	return Bp, ρ, x1f, x2f, x3f, blocks, Nblocks, Time
 	close(h5)
 end
 
-#### Insert the location of data that you want to plot ####
-Bp, ρ, x1v, x2v, x3v, blocks, Nblocks, Time = readhdf("/home/raman/Videos/DataSANE00LowRes/sane00.prim.01999.athdf")
+#### Insert the address of .athdf data that you want to plot. 
+Bp, ρ, x1f, x2f, x3f, blocks, Nblocks, Time = readhdf("/home/raman/Videos/DataSANE00LowRes/sane00.prim.01830.athdf")
 
-function compute_bounds(x1v, x2v, x3v, Nblocks) 
+#### compute_bounds() finds extrema of x,y and z coordinate values for all blocks we have in Nblocks.
+function compute_bounds(x1f, x2f, x3f, Nblocks) 
     xmin=Inf32; xmax=-Inf32; ymin=Inf32; ymax=-Inf32; zmin=Inf32; zmax=-Inf32
     for b in Nblocks
-        @views r, theta, phi = x1v[:, b], x2v[:, b], x3v[:, b]
+        @views r, theta, phi = x1f[:, b], x2f[:, b], x3f[:, b]
         rvals = extrema(r)
         sinθs = extrema(sin, theta)
         cosθs = extrema(cos, theta)
@@ -40,8 +45,9 @@ function compute_bounds(x1v, x2v, x3v, Nblocks)
 end
 
 #### Specify the minimum amd maximum values of x,y,z coordinates values that you want to plot upto.
-xmin, xmax, ymin, ymax, zmin, zmax = compute_bounds(x1v, x2v, x3v, Nblocks) # -30,30,-30,30,-30,30 #
+xmin, xmax, ymin, ymax, zmin, zmax =   compute_bounds(x1f, x2f, x3f, Nblocks) #-35,35,-35,35,-35,35 #
 
+#### cartesian_to_spherical() converts cartesian coordinate to spherical.
 function cartesian_to_spherical(x, y, z)
     r = hypot(x, y, z)
     θ = r == 0 ? 0.0 : acos(z/r)
@@ -49,6 +55,7 @@ function cartesian_to_spherical(x, y, z)
     return r, θ, ϕ
 end
 
+#### Since Bp, ρ data are cell-body-centred so they are (nx3)×(nx2)×(nx1) arrays. But x1f,x2f,x3f are interface locations so they are (nx3+1)×(nx2+1)×(nx1+1) arrays. Interpolation method that we use needs both data and interface locations to have same dimensions. To make them of same dimension we append last vector of array once more.  
 function append_repeat_last(A::AbstractArray)
     B = similar(A, size(A) .+ 1)
     B[axes(A)...] .= A
@@ -67,11 +74,12 @@ function block_interpolator(x1,x2,x3, Bblock::Array{Float32, 3})
     #extrapolate(interpolate(Bblock, BSpline(Cubic())), NaN32) #,x1, x2, x3)
 end
 
-function interp(data, x1v, x2v, x3v, blocks, Nblocks)
+#### interp() function do interpolation of the data on (x1f, x2f, x3f) array locations.
+function interp(data, x1f, x2f, x3f, blocks, Nblocks)
 	interps = Vector{Any}(undef, blocks)
 	@threads for b in Nblocks
 		@views begin
-		    x1 = log.(x1v[:, b]); x2 = x2v[:, b]; x3 = x3v[:, b]
+		    x1 = log.(x1f[:, b]); x2 = x2f[:, b]; x3 = x3f[:, b]
 		  	data_block = data[:,:,:,b]
 		    data_block = append_repeat_last(data_block)
 			interps[b] = block_interpolator(x1,x2,x3, data_block)
@@ -80,20 +88,13 @@ function interp(data, x1v, x2v, x3v, blocks, Nblocks)
 	return interps
 end
 
-interps_Bp = interp(Bp, x1v, x2v, x3v, blocks, Nblocks)
-interps_ρ = interp(ρ, x1v, x2v, x3v, blocks, Nblocks)
-steps::Int32 = 15
-
-function fill_field(xmin, xmax, ymin, ymax, zmin, zmax, Nblocks, steps, interps)
+interps_Bp = interp(Bp, x1f, x2f, x3f, blocks, Nblocks)
+interps_ρ = interp(ρ, x1f, x2f, x3f, blocks, Nblocks)
+#steps::Float32 = 0.5
+#### Larger step, lowers resolution. We initialise an array named field that will be filled by interpolated values. Now we march in steps from minima of each x1f,x2f,x3f coordinates to their maxima. x1f is in geometric series so we take its log as we are using Interpolation.jl scheme that needs uniform spacing in grid for interpolation. 
+function fill_field(xmin, xmax, ymin, ymax, zmin, zmax, Nblocks, interps; steps=Float32(20.0))
 	@show rx= length(xmin:steps:xmax); ry= length(ymin:steps:ymax); rz = length(zmin:steps:zmax)
 	field = fill(NaN32, (rx,ry,rz))
-	#=for (i,x) in enumerate(xmin:steps:xmax), (j,y) in enumerate(ymin:steps:ymax), (k,z) in enumerate(zmin:steps:zmax)
-		r, θ, ϕ = cartesian_to_spherical(x, y, z)
-		for b in Nblocks
-			itp = interps[b](log(r), θ, ϕ)
-			itp !==NaN32 ? field[i,j,k]= itp : continue
-		end
-	end=#
 	@threads for i in 1:rx
 		x = xmin + (i-1)*steps
 		for j in 1:ry
@@ -112,29 +113,28 @@ function fill_field(xmin, xmax, ymin, ymax, zmin, zmax, Nblocks, steps, interps)
 		    end
 		end
 	end
-
 	return field
 end
 
-field_Bp = fill_field(xmin, xmax, ymin, ymax, zmin, zmax, Nblocks, steps, interps_Bp)
-field_ρ = fill_field(xmin, xmax, ymin, ymax, zmin, zmax, Nblocks, steps, interps_ρ)
+field_Bp = fill_field(xmin, xmax, ymin, ymax, zmin, zmax, Nblocks, interps_Bp)
+field_ρ = fill_field(xmin, xmax, ymin, ymax, zmin, zmax, Nblocks, interps_ρ)
 
-function tdplot(xmin, xmax, ymin, ymax, zmin, zmax, Time, field_Bp, field_ρ)
+#### plot3d() function creates 3D plot using interpolated field_Bp, field_ρ data and extrema of each coordinates.
+function plot3d(xmin, xmax, ymin, ymax, zmin, zmax, Time, field_Bp, field_ρ)
 	finite_vals = filter(!isnan, vec(field_ρ))
 	q_low, q_high = quantile(finite_vals, (0.05, 0.95))
 	fig = Figure()
 	ax::LScene = LScene(fig[1,1], show_axis=true)
-
-	volume!(ax, xmin..xmax, ymin..ymax, zmin..zmax, field_Bp; transparency=true, algorithm = :iso, isorange =0.4, isovalue =2.6063323f0, colormap   =[:red])#mean(finite_vals))
+	@show mn = mean(filter(!isnan, vec(field_Bp)))
+	volume!(ax, xmin..xmax, ymin..ymax, zmin..zmax, field_Bp; transparency=true, algorithm = :iso, isorange =0.00001, isovalue =mn, colormap  =[:red])#mean(finite_vals))
 	volume!(ax, xmin..xmax, ymin..ymax, zmin..zmax, field_ρ; transparency=true, colorscale=Makie.pseudolog10)#, colorrange=(q_low, q_high))
 	#volume!(ax, xmin..xmax, ymin..ymax, zmin..zmax, field; algorithm = :absorption, absorption=2f0, colorscale=Makie.pseudolog10)
 	#volume!(ax, xmin..xmax, ymin..ymax, zmin..zmax, field; transparency=true, algorithm = :additive, diffuse=0.05, colorrange=(q_low, q_high))
-	update_cam!(ax.scene, cameracontrols(ax), Point3f(1500,1500,1000), Point3f(0, 0, 500), Vec3f(0, 0, 1))
-	display(fig, update=false)
-	save("zoom$Time.png", fig, update=false)
+	#update_cam!(ax.scene, cameracontrols(ax), Point3f(1500,1500,1000), Point3f(0, 0, 500), Vec3f(0, 0, 1))
+	display(fig, update=true)
+	save("zoom$Time.png", fig, update=true)
 end
 
-tdplot(xmin, xmax, ymin, ymax, zmin, zmax, Time, field_Bp, field_ρ)
+plot3d(xmin, xmax, ymin, ymax, zmin, zmax, Time, field_Bp, field_ρ)
 
 end
-
