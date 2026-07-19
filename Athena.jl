@@ -21,7 +21,7 @@ function readhdf(h5file::String)
 end
 
 #### Insert the address of .athdf data that you want to plot. 
-Bp, ρ, x1f, x2f, x3f, blocks, Nblocks, Time = readhdf("/home/raman/Videos/DataSANE00LowRes/sane00.prim.01830.athdf")
+Bp, ρ, x1f, x2f, x3f, blocks, Nblocks, Time = readhdf("/home/raman/Videos/DataSANE00LowRes/sane00.prim.01800.athdf")
 
 #### compute_bounds() finds extrema of x,y and z coordinate values for all blocks we have in Nblocks.
 function compute_bounds(x1f, x2f, x3f, Nblocks) 
