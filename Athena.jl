@@ -92,7 +92,7 @@ interps_Bp = interp(Bp, x1f, x2f, x3f, blocks, Nblocks)
 interps_ρ = interp(ρ, x1f, x2f, x3f, blocks, Nblocks)
 #steps::Float32 = 0.5
 #### Larger step, lowers resolution. We initialise an array named field that will be filled by interpolated values. Now we march in steps from minima of each x1f,x2f,x3f coordinates to their maxima. x1f is in geometric series so we take its log as we are using Interpolation.jl scheme that needs uniform spacing in grid for interpolation. 
-function fill_field(xmin, xmax, ymin, ymax, zmin, zmax, Nblocks, interps; steps=Float32(20.0))
+function fill_field(xmin, xmax, ymin, ymax, zmin, zmax, Nblocks, interps; steps=Float32(3.0))
 	@show rx= length(xmin:steps:xmax); ry= length(ymin:steps:ymax); rz = length(zmin:steps:zmax)
 	field = fill(NaN32, (rx,ry,rz))
 	@threads for i in 1:rx
