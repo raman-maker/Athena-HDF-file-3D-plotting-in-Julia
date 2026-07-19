@@ -45,7 +45,7 @@ function compute_bounds(x1f, x2f, x3f, Nblocks)
 end
 
 #### Specify the minimum amd maximum values of x,y,z coordinates values that you want to plot upto.
-xmin, xmax, ymin, ymax, zmin, zmax =   compute_bounds(x1f, x2f, x3f, Nblocks) #-35,35,-35,35,-35,35 #
+xmin, xmax, ymin, ymax, zmin, zmax =  -35,35,-35,35,-35,35 # compute_bounds(x1f, x2f, x3f, Nblocks) #
 
 #### cartesian_to_spherical() converts cartesian coordinate to spherical.
 function cartesian_to_spherical(x, y, z)
